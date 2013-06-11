@@ -1,6 +1,6 @@
 {
   "name": "browserify-bundle-factory",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Makes programmattically building browserify bundles super-easy",
   "main": "index.js",
   "scripts": {
