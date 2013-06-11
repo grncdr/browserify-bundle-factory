@@ -6,8 +6,6 @@ var browserify             = require('browserify');
 var defined                = require('defined');
 var createDependencyStream = require('create-dependency-stream');
 var mapAsync               = require('map-async');
-var map                    = require('map-stream');
-var mkdirp                 = require('mkdirp');
 var once                   = require('once');
 var symlinkDependencies    = require('symlink-dependencies');
 var through                = require('through');
@@ -33,15 +31,16 @@ function bundleFactory(opts) {
         hash.update(srcPath);
         hash.update(sources[srcPath].source);
       }
-      var bundleDir  = path.join(installDir, 'package', hash.digest('hex'));
+      var bundleDir  = path.join(installDir, hash.digest('hex'));
       var bundlePath = path.join(bundleDir, 'bundle.js');
       fs.exists(bundlePath, function (exists) {
         if (exists) {
           fs.createReadStream(bundlePath).pipe(out);
         } else {
           makeBundle(bundleDir, sources, function (err, b) {
-            if (err) out.emit('error', err);
-            else b.bundle().pipe(out);
+            if (err) return out.emit('error', err);
+            out.pipe(fs.createWriteStream(bundlePath));
+            b.bundle().pipe(out);
           });
         }
       })
@@ -82,7 +81,7 @@ function bundleFactory(opts) {
 
     // Get all our deps wired up with symlinks in the cache
     createDependencyStream(pkgJSON, npmOpts)
-      .pipe(map(symlinkDependencies.bind(null, npmOpts)))
+      .pipe(symlinkDependencies.streamMapper(npmOpts))
       .on('data', function (dep) {
         if (!dep.parent) {
           dep.parent = rootDep;
@@ -94,18 +93,13 @@ function bundleFactory(opts) {
   }
 
   function prepareBundleDeps(rootDep, callback) {
+    var deps = rootDep.dependencies;
     var hash = crypto.createHash('sha1');
-    hashDeps(rootDep.dependencies, hash);
+    hashDeps(deps, hash);
     var installDir = getInstallDir(hash.digest('hex'));
-    var symlinkOpts = {
-      cache: npmOpts.cache,
-      installDir: installDir
-    }
-    mkdirp(installDir, function (err) {
-      if (err) return callback(err);
-      symlinkDependencies(symlinkOpts, rootDep, function (err) {
-        callback(err, installDir)
-      });
+    var moduleDir = path.join(installDir, 'node_modules');
+    symlinkDependencies(npmOpts.cache, moduleDir, deps, function (err) {
+      callback(err, installDir)
     });
   }
 
@@ -147,6 +141,5 @@ if (module === require.main) {
     }
     bundler(json, sources, {})
       .pipe(process.stdout)
-    process.stdout.resume()
   })()
 }
