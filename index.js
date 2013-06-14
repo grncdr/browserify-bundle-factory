@@ -27,10 +27,10 @@ function bundleFactory(opts) {
     prepareBundle(pkgJSON, function (err, installDir) {
       if (err) return out.emit('error', err);
       var hash = crypto.createHash('sha1');
-      for (var srcPath in sources) {
+      Object.keys(sources).sort().forEach(function (srcPath) {
         hash.update(srcPath);
         hash.update(sources[srcPath].source);
-      }
+      })
       var bundleDir  = path.join(installDir, hash.digest('hex'));
       var bundlePath = path.join(bundleDir, 'bundle.js');
       fs.exists(bundlePath, function (exists) {
