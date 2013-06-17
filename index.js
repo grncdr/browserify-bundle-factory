@@ -23,24 +23,28 @@ function bundleFactory(opts) {
 
   function getBundle(pkgJSON, sources, browserifyOptions) {
     var out = through();
+    var handleError = out.emit.bind(out, 'error');
 
     prepareBundle(pkgJSON, function (err, installDir) {
-      if (err) return out.emit('error', err);
-      var hash = crypto.createHash('sha1');
+      if (err) return handleError(err);
+      var hash = crypto.createHash('md5');
       Object.keys(sources).sort().forEach(function (srcPath) {
         hash.update(srcPath);
         hash.update(sources[srcPath].source);
       })
-      var bundleDir  = path.join(installDir, hash.digest('hex'));
-      var bundlePath = path.join(bundleDir, 'bundle.js');
+      hash = hash.digest('base64').slice(0, 22);
+      var bundleDir  = path.join(installDir, hash);
+      var bundlePath = bundleDir + '.js';
       fs.exists(bundlePath, function (exists) {
         if (exists) {
-          fs.createReadStream(bundlePath).pipe(out);
+          var r = fs.createReadStream(bundlePath);
+          r.on('error', handleError);
+          r.pipe(out);
         } else {
           makeBundle(bundleDir, sources, function (err, b) {
-            if (err) return out.emit('error', err);
+            if (err) return handleError(err);
             out.pipe(fs.createWriteStream(bundlePath));
-            b.bundle().pipe(out);
+            b.bundle().on('error', handleError).pipe(out);
           });
         }
       })
@@ -58,7 +62,9 @@ function bundleFactory(opts) {
             var destPath = path.join(bundleDir, dest);
             fs.writeFile(destPath, file.source, function (err) {
               if (err) return next(err);
-              b.require(destPath, file.options || {})
+              var opts = file.options || { expose: destPath };
+              opts.basedir = bundleDir;
+              b.require(destPath, opts)
               next()
             });
           },
@@ -70,33 +76,31 @@ function bundleFactory(opts) {
 
   function prepareBundle(pkgJSON, callback) {
     callback = once(callback);
-    var rootDep = {
-      name:         pkgJSON.name,
-      versionRange: pkgJSON.version,
-      version:      pkgJSON.version,
-      parent:       null,
-      'package':    pkgJSON,
-      dependencies: {}
-    }
 
+    var deps = {}
+
+    var pkgSums = {}
     // Get all our deps wired up with symlinks in the cache
     createDependencyStream(pkgJSON, npmOpts)
       .pipe(symlinkDependencies.streamMapper(npmOpts))
       .on('data', function (dep) {
         if (!dep.parent) {
-          dep.parent = rootDep;
-          rootDep.dependencies[dep.name] = dep;
+          deps[dep.name] = dep;
+        }
+        if (dep['package'] && dep['package'].dist) {
+          pkgSums[dep['package']._id] = dep['package'].dist.shasum;
         }
       })
       .on('error', callback)
-      .on('end', prepareBundleDeps.bind(null, rootDep, callback));
+      .on('end', prepareBundleDeps.bind(null, deps, pkgSums, callback));
   }
 
-  function prepareBundleDeps(rootDep, callback) {
-    var deps = rootDep.dependencies;
-    var hash = crypto.createHash('sha1');
-    hashDeps(deps, hash);
-    var installDir = getInstallDir(hash.digest('hex'));
+  function prepareBundleDeps(deps, pkgSums, callback) {
+    var hash = crypto.createHash('md5');
+    Object.keys(pkgSums).sort().forEach(function (id) {
+      hash.update(pkgSums[id])
+    })
+    var installDir = getInstallDir(hash.digest('base64').substring(0, 22));
     var moduleDir = path.join(installDir, 'node_modules');
     symlinkDependencies(npmOpts.cache, moduleDir, deps, function (err) {
       callback(err, installDir)
@@ -108,18 +112,6 @@ function bundleFactory(opts) {
       .concat(digest.substring(0, 6).match(/../g))
       .concat([digest.substring(6)])
       .join('/');
-  }
-
-  function hashDeps(deps, hash, parent) {
-    parent = parent || '';
-    Object.keys(deps).sort().forEach(function (name) {
-      var path = parent + '!' + name;
-      if (deps[name].dependencies) {
-        hashDeps(deps[name].dependencies, hash, path);
-      }
-      hash.update(path)
-      hash.update(deps[name].version);
-    })
   }
 }
 
